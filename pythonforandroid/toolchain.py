@@ -2008,11 +2008,11 @@ class CythonRecipe(PythonRecipe):
 
             shprint(hostpython, 'setup.py', 'build_ext', '-v', _env=env)
 
-            print('stripping')
-            build_lib = glob.glob('./build/lib*')
-            shprint(sh.find, build_lib[0], '-name', '*.o', '-exec',
-                    env['STRIP'], '{}', ';', _env=env)
-            print('stripped!?')
+            for build_lib in glob.glob('./build/lib*'):
+              print('stripping {}'.format(build_lib))
+              shprint(sh.find, build_lib[0], '-name', '*.o', '-exec',
+                      env['STRIP'], '{}', ';', _env=env)
+              print('stripped!?')
             # exit(1)
 
     # def cythonize_file(self, filename):
