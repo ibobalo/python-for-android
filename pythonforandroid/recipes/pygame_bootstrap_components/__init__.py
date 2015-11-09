@@ -9,7 +9,9 @@ class PygameJNIComponentsRecipe(NDKRecipe):
     dir_name = 'bootstrap_components'
 
     def prebuild_arch(self, arch):
-        super(PygameJNIComponentsRecipe, self).postbuild_arch(arch)
+        super(PygameJNIComponentsRecipe, self).prebuild_arch(arch)
+
+        self.apply_all_patches(arch=arch.arch)
 
         info('Unpacking pygame bootstrap JNI dir components')
         with current_directory(self.get_build_container_dir(arch)):

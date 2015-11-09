@@ -25,4 +25,8 @@ class KivyRecipe(CythonRecipe):
                 ])
         return env
 
+    def prebuild_arch(self, arch):
+        super(KivyRecipe, self).prebuild_arch(arch)
+        self.apply_all_patches(arch=arch.arch)
+
 recipe = KivyRecipe()

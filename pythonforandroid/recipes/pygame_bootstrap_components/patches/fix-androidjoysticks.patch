@@ -1,0 +1,540 @@
+diff --git a/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.c b/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.c
+index d50976b..73ce38f 100644
+--- a/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.c
++++ b/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.c
+@@ -26,6 +26,7 @@
+ #include <stdint.h>
+ #include <math.h>
+ #include <string.h> // for memset()
++#include <limits.h>
+ 
+ #include "SDL_config.h"
+ 
+@@ -38,12 +39,27 @@
+ 
+ SDLKey SDL_android_keymap[KEYCODE_LAST+1];
+ 
++extern JNIEnv *SDL_ANDROID_GetJNIEnv();
++
++struct _SDL_AndroidJoystickInfo {
++	SDL_Joystick  *joystick;
++	char          *name;
++	unsigned      naxes;
++	unsigned      nhats;
++	unsigned      nballs;
++	unsigned      nbuttons;
++};
++typedef struct _SDL_AndroidJoystickInfo SDL_AndroidJoystickInfo;
+ 
+ static int isTrackballUsed = 0;
+ static int isMouseUsed = 0;
+ static int isJoystickUsed = 0;
+ static int isMultitouchUsed = 0;
+-static SDL_Joystick *CurrentJoysticks[MAX_MULTITOUCH_POINTERS+1] = {NULL};
++static int nAccelerometers = MAX_ACCELEROMETER_JOYSTICKS;
++static int nPointers = 0;
++static int nHardwareJoysticks = 0;
++#define MAX_TOTAL_JOYSTICKS (MAX_ACCELEROMETER_JOYSTICKS + MAX_TOUCH_JOYSTICKS + MAX_HARDWARE_JOYSTICKS)
++static SDL_AndroidJoystickInfo AndroidJoysticksInfo[MAX_TOTAL_JOYSTICKS];
+ static int TrackballDampening = 0; // in milliseconds
+ static int lastTrackballAction = 0;
+ 
+@@ -65,14 +81,14 @@ JAVA_EXPORT_NAME(SDLSurfaceView_nativeMouse) ( JNIEnv*  env, jobject  thiz, jint
+ 	// if( SDL_android_processTouchscreenKeyboard(x, y, action, pointerId) )
+         // return;
+ 
+-        if (GLES_pwidth != 0.0) {
+-        
+-            float ix = 1.0 * x / GLES_pwidth;
+-            float iy = 1.0 * y / GLES_pheight;
++	if (GLES_pwidth != 0.0) {
+ 
+-            x = (int) (GLES_vbox_left + ix * (GLES_vbox_right - GLES_vbox_left));
+-            y = (int) (GLES_vbox_top + iy * (GLES_vbox_bottom - GLES_vbox_top));
+-        }
++		float ix = 1.0 * x / GLES_pwidth;
++		float iy = 1.0 * y / GLES_pheight;
++
++		x = (int) (GLES_vbox_left + ix * (GLES_vbox_right - GLES_vbox_left));
++		y = (int) (GLES_vbox_top + iy * (GLES_vbox_bottom - GLES_vbox_top));
++	}
+             
+ #if SDL_VIDEO_RENDER_RESIZE
+ 	// Translate mouse coordinates
+@@ -90,30 +106,51 @@ JAVA_EXPORT_NAME(SDLSurfaceView_nativeMouse) ( JNIEnv*  env, jobject  thiz, jint
+ 
+ #endif
+ 
+-	if( isMultitouchUsed )
++	if( isMultitouchUsed && pointerId < nPointers)
+ 	{
+-		if( CurrentJoysticks[pointerId] )
++		__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick event used for private, %d<%d",
++				pointerId, nPointers);
++		const SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[nAccelerometers + pointerId];
++		SDL_Joystick *joystick = info->joystick;
++		if( joystick )
+ 		{
+-			SDL_PrivateJoystickAxis(CurrentJoysticks[pointerId+1], 0, x);
+-			SDL_PrivateJoystickAxis(CurrentJoysticks[pointerId+1], 1, y);
+-			SDL_PrivateJoystickAxis(CurrentJoysticks[pointerId+1], 2, force);
+-			SDL_PrivateJoystickAxis(CurrentJoysticks[pointerId+1], 3, radius);
++			SDL_PrivateJoystickAxis(joystick, 0, x);
++			SDL_PrivateJoystickAxis(joystick, 1, y);
++			SDL_PrivateJoystickAxis(joystick, 2, force);
++			SDL_PrivateJoystickAxis(joystick, 3, radius);
+ 			if( action == MOUSE_DOWN )
+-				SDL_PrivateJoystickButton(CurrentJoysticks[pointerId+1], 0, SDL_PRESSED);
++				SDL_PrivateJoystickButton(joystick, 0, SDL_PRESSED);
+ 			if( action == MOUSE_UP )
+-				SDL_PrivateJoystickButton(CurrentJoysticks[pointerId+1], 0, SDL_RELEASED);
++				SDL_PrivateJoystickButton(joystick, 0, SDL_RELEASED);
+ 		}
+ 	}
++	else
++	{
++		__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick event not used for private and passed, %d>=%d",
++				pointerId, nPointers);
++	}
++
+ 	if( !isMouseUsed )
+ 	{
+ 		SDL_keysym keysym;
+ 		if( action != MOUSE_MOVE )
+-			SDL_SendKeyboardKey( action == MOUSE_DOWN ? SDL_PRESSED : SDL_RELEASED, GetKeysym(SDL_KEY(SDL_KEY_VAL(SDL_ANDROID_KEYCODE_0)) ,&keysym) );
++		{
++			__android_log_print(ANDROID_LOG_INFO, "libSDL", "Redirecting mouse %s event"
++					"to key0 event.", action == MOUSE_DOWN ? "DOWN" : "UP");
++			SDL_SendKeyboardKey( action == MOUSE_DOWN ? SDL_PRESSED : SDL_RELEASED,
++					GetKeysym(SDL_KEY(SDL_KEY_VAL(SDL_ANDROID_KEYCODE_0)) ,&keysym) );
++		}
++		else
++		{
++			__android_log_print(ANDROID_LOG_INFO, "libSDL", "Ignoring mouse event");
++		}
+ 		return;
+ 	}
+ 
+ 	if( action == MOUSE_DOWN || action == MOUSE_UP )
+ 	{
++		__android_log_print(ANDROID_LOG_INFO, "libSDL", "Mouse %s event %d,%d",
++				(action == MOUSE_DOWN)?"DOWN":"UP", x, y);
+ #if SDL_VERSION_ATLEAST(1,3,0)
+ 		SDL_SendMouseMotion(NULL, 0, x, y);
+ 		SDL_SendMouseButton(NULL, (action == MOUSE_DOWN) ? SDL_PRESSED : SDL_RELEASED, 1 );
+@@ -123,18 +160,17 @@ JAVA_EXPORT_NAME(SDLSurfaceView_nativeMouse) ( JNIEnv*  env, jobject  thiz, jint
+ #endif
+ 	}
+ 	if( action == MOUSE_MOVE ) {
++		__android_log_print(ANDROID_LOG_INFO, "libSDL", "Mouse move event %d,%d", x, y);
+ #if SDL_VERSION_ATLEAST(1,3,0)
+ 		SDL_SendMouseMotion(NULL, 0, x, y);
+ #else
+-
+-        
+ 		SDL_PrivateMouseMotion(0, 0, x, y);
+ #endif
+-        }
+-                
+-        if (action == MOUSE_UP) {
+-            SDL_PrivateMouseMotion(0, 0, -4096, -4096);
+-        }
++    }
++	if (action == MOUSE_UP) {
++		__android_log_print(ANDROID_LOG_INFO, "libSDL", "Mouse up event");
++        SDL_PrivateMouseMotion(0, 0, -4096, -4096);
++    }
+ 
+ }
+ 
+@@ -213,6 +249,131 @@ JAVA_EXPORT_NAME(SDLSurfaceView_nativeSetMultitouchUsed) ( JNIEnv*  env, jobject
+ 	isMultitouchUsed = 1;
+ }
+ 
++JNIEXPORT void JNICALL
++JAVA_EXPORT_NAME(SDLSurfaceView_nativeSetPointersCount) ( JNIEnv*  env, jobject thiz, jint nPointersCount)
++{
++	nPointers = (nPointersCount <= MAX_TOUCH_JOYSTICKS) ? nPointersCount : MAX_TOUCH_JOYSTICKS;
++	__android_log_print(ANDROID_LOG_INFO, "libSDL",
++			"Joystick: first %d joysticks are used for pointing", nPointers);
++}
++
++JNIEXPORT void JNICALL
++JAVA_EXPORT_NAME(SDLSurfaceView_nativeJoystickAdd) ( JNIEnv*  env, jobject thiz, jint stick, jstring name, jint nAxes, jint nHats, jint nBtns)
++{
++	const char *nativeName = (*env)->GetStringUTFChars(env, name, 0);
++	const unsigned nameLen = strlen(nativeName);
++	const unsigned infoIndex = nAccelerometers + stick;
++
++	__android_log_print(ANDROID_LOG_INFO, "libSDL",
++			"Joystick: add device %d \"%s\" (%d) with %d axes, %d hats, %d buttons",
++			stick, nativeName,
++			infoIndex,
++			nAxes, nHats, nBtns);
++
++	if (infoIndex < MAX_TOTAL_JOYSTICKS) {
++		SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[infoIndex];
++		SDL_Joystick *joystick = info->joystick;
++		char *storedName = info->name;
++		if (storedName) {
++			if (joystick && joystick->name == storedName) {
++				joystick->name = NULL;
++			}
++			SDL_free(storedName);
++		}
++		storedName = SDL_malloc(nameLen + 1);
++		if (storedName == NULL) {
++			SDL_OutOfMemory();
++			return;
++		}
++		memcpy(storedName, nativeName, nameLen + 1);
++		info->name = storedName;
++		info->naxes = nAxes;
++		info->nhats = nHats;
++		info->nbuttons = nBtns;
++		if (joystick && joystick->name == NULL) {
++			joystick->name = storedName;
++		}
++		nHardwareJoysticks++;
++	}
++	(*env)->ReleaseStringUTFChars(env, name, nativeName);
++}
++
++JNIEXPORT void JNICALL
++JAVA_EXPORT_NAME(SDLSurfaceView_nativeJoystickRemove) ( JNIEnv*  env, jobject thiz, jint stick)
++{
++	__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: remove device %d. registered %d.",
++			stick, nHardwareJoysticks);
++	const unsigned infoIndex = nAccelerometers + stick;
++	if (infoIndex < MAX_TOTAL_JOYSTICKS) {
++		SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[infoIndex];
++		SDL_Joystick *joystick = info->joystick;
++		char *storedName = info->name;
++		if (storedName) {
++			if (joystick && joystick->name == storedName)
++				joystick->name = NULL;
++			SDL_free(storedName);
++		}
++		nHardwareJoysticks--;
++		memset(info, 0, sizeof(*info));
++	}
++}
++
++JNIEXPORT jboolean JNICALL
++JAVA_EXPORT_NAME(SDLSurfaceView_nativeJoystickMove) ( JNIEnv*  env, jobject thiz, jint stick, jint axis, jfloat value)
++{
++//	__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: move %d.%d %f", stick, axis, value);
++	const unsigned infoIndex = nAccelerometers + stick;
++
++	if (infoIndex < MAX_TOTAL_JOYSTICKS) {
++		const SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[infoIndex];
++		SDL_Joystick *joystick = info->joystick;
++		if (joystick) {
++			SDL_PrivateJoystickAxis(joystick, axis, value * SHRT_MAX);
++			return 1;
++		}
++	}
++	return 0;
++}
++
++JNIEXPORT jboolean JNICALL
++JAVA_EXPORT_NAME(SDLSurfaceView_nativeJoystickButton) ( JNIEnv*  env, jobject thiz, jint stick, jint button, jint state)
++{
++//	__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: button %d.%d %d", stick, button, state);
++	const unsigned infoIndex = nAccelerometers + stick;
++	if (infoIndex < MAX_TOTAL_JOYSTICKS) {
++		SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[infoIndex];
++		SDL_Joystick *joystick = info->joystick;
++		if (joystick) {
++			SDL_PrivateJoystickButton(joystick, button, state?SDL_PRESSED:SDL_RELEASED);
++			return 1;
++		}
++	}
++	return 0;
++}
++
++JNIEXPORT jboolean JNICALL
++JAVA_EXPORT_NAME(SDLSurfaceView_nativeJoystickHat) ( JNIEnv*  env, jobject thiz, jint stick, jint hat, jfloat x, jfloat y)
++{
++//	__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: hat %d.%d (%f, %f)", stick, hat, x, y);
++	const unsigned infoIndex = nAccelerometers + stick;
++	if (infoIndex < MAX_TOTAL_JOYSTICKS) {
++		SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[infoIndex];
++		SDL_Joystick *joystick = info->joystick;
++		if (joystick) {
++			unsigned state = SDL_HAT_CENTERED;
++			if (x >= 0.5)       state |= SDL_HAT_RIGHT;
++			else if (x <= -0.5) state |= SDL_HAT_LEFT;
++			if (y >= 0.5)       state |= SDL_HAT_DOWN;
++			else if (y <= -0.5) state |= SDL_HAT_UP;
++//			__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: hat %d.%d (%f, %f) %x", stick, hat, x, y, state);
++			SDL_PrivateJoystickHat(joystick, hat, state);
++			return 1;
++		}
++	}
++	return 0;
++}
++
++
+ void ANDROID_InitOSKeymap()
+ {
+   int i;
+@@ -335,22 +496,27 @@ void updateOrientation ( float accX, float accY, float accZ )
+ 	
+ 	midX = 0.0f; // Do not remember old value for phone tilt, it feels weird
+ 	
+-	if( isJoystickUsed && CurrentJoysticks[0] ) // TODO: mutex for that stuff?
++	if (nAccelerometers)
+ 	{
+-		// TODO: fix coefficients
+-		SDL_PrivateJoystickAxis(CurrentJoysticks[0], 0, (accX - midX) * 1000);
+-		SDL_PrivateJoystickAxis(CurrentJoysticks[0], 1, (accY - midY) * 1000);
+-		SDL_PrivateJoystickAxis(CurrentJoysticks[0], 2, (accZ - midZ) * 1000);
+-
+-		if( accY < midY - dy*2 )
+-			midY = accY + dy*2;
+-		if( accY > midY + dy*2 )
+-			midY = accY - dy*2;
+-		if( accZ < midZ - dz*2 )
+-			midZ = accZ + dz*2;
+-		if( accZ > midZ + dz*2 )
+-			midZ = accZ - dz*2;
+-		return;
++		const SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[0];
++		SDL_Joystick *joystick = info->joystick;
++		if( isJoystickUsed && joystick ) // TODO: mutex for that stuff?
++		{
++			// TODO: fix coefficients
++			SDL_PrivateJoystickAxis(joystick, 0, (accX - midX) * 1000);
++			SDL_PrivateJoystickAxis(joystick, 1, (accY - midY) * 1000);
++			SDL_PrivateJoystickAxis(joystick, 2, (accZ - midZ) * 1000);
++
++			if( accY < midY - dy*2 )
++				midY = accY + dy*2;
++			if( accY > midY + dy*2 )
++				midY = accY - dy*2;
++			if( accZ < midZ - dz*2 )
++				midZ = accZ + dz*2;
++			if( accZ > midZ + dz*2 )
++				midZ = accZ - dz*2;
++			return;
++		}
+ 	}
+ 
+ 	
+@@ -601,18 +767,119 @@ void SDL_ANDROID_processAndroidTrackballDampening()
+ 	}
+ }
+ 
++void SDL_ANDROID_enumerateInputDevices(void)
++{
++    static JNIEnv *env = NULL;
++    static jclass *cls = NULL;
++    static jmethodID mid = NULL;
++
++    if (env == NULL) {
++        env = SDL_ANDROID_GetJNIEnv();
++        if (env) cls = (*env)->FindClass(env, "org/renpy/android/SDLSurfaceView");
++        if (cls) mid = (*env)->GetStaticMethodID(env, cls, "enumerateInputDevices", "()V");
++        if (!mid) {
++        	__android_log_print(ANDROID_LOG_ERROR, "libSDL", "enumerate input devices %s failed.", env?(cls?"GetStaticMethod":"FindClass"):"GetJNIEnv");
++        	abort();
++    	}
++    }
++
++    (*env)->CallStaticVoidMethod(env, cls, mid);
++}
++void SDL_ANDROID_denumerateInputDevices(void)
++{
++    static JNIEnv *env = NULL;
++    static jclass *cls = NULL;
++    static jmethodID mid = NULL;
++
++    if (env == NULL) {
++        env = SDL_ANDROID_GetJNIEnv();
++        if (env) cls = (*env)->FindClass(env, "org/renpy/android/SDLSurfaceView");
++        if (cls) mid = (*env)->GetStaticMethodID(env, cls, "denumerateInputDevices", "()V");
++        if (!mid) {
++        	__android_log_print(ANDROID_LOG_ERROR, "libSDL", "denumerate input devices %s failed.", env?(cls?"GetStaticMethod":"FindClass"):"GetJNIEnv");
++        	abort();
++    	}
++    }
++
++    (*env)->CallStaticVoidMethod(env, cls, mid);
++}
++int SDL_ANDROID_openJoystick(int index)
++{
++    static JNIEnv *env = NULL;
++    static jclass *cls = NULL;
++    static jmethodID mid = NULL;
++
++    if (env == NULL) {
++        env = SDL_ANDROID_GetJNIEnv();
++        if (env) cls = (*env)->FindClass(env, "org/renpy/android/SDLSurfaceView");
++        if (cls) mid = (*env)->GetStaticMethodID(env, cls, "openJoystick", "(I)I");
++        if (!mid) {
++        	__android_log_print(ANDROID_LOG_ERROR, "libSDL", "open joystick %s failed.", env?(cls?"GetStaticMethod":"FindClass"):"GetJNIEnv");
++        	abort();
++    	}
++    }
++
++    return (*env)->CallStaticIntMethod(env, cls, mid, (jint)index);
++}
++void SDL_ANDROID_closeJoystick(int index)
++{
++    static JNIEnv *env = NULL;
++    static jclass *cls = NULL;
++    static jmethodID mid = NULL;
++
++    if (env == NULL) {
++        env = SDL_ANDROID_GetJNIEnv();
++        if (env) cls = (*env)->FindClass(env, "org/renpy/android/SDLSurfaceView");
++        if (cls) mid = (*env)->GetStaticMethodID(env, cls, "closeJoystick", "(I)V");
++        if (!mid) {
++        	__android_log_print(ANDROID_LOG_ERROR, "libSDL", "close joystick %s failed.", env?(cls?"GetStaticMethod":"FindClass"):"GetJNIEnv");
++        	abort();
++    	}
++    }
++
++    (*env)->CallStaticVoidMethod(env, cls, mid, (jint)index);
++}
++
+ int SDL_SYS_JoystickInit(void)
+ {
+-	SDL_numjoysticks = MAX_MULTITOUCH_POINTERS+1;
+-	return SDL_numjoysticks;
++	unsigned index;
++
++	__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joysticks init...");
++	SDL_ANDROID_enumerateInputDevices(); // calls  ..._nativeMultitouchSetInfo and ..._nativeJoystickAdd()
++
++	for (index = 0; index < nAccelerometers; ++index) {
++		SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[index];
++		const char* name = "Android accelerometer/orientation sensor";
++		unsigned size = strlen(name) + 1;
++		info->name = SDL_malloc(size);
++		if (info->name == NULL) {
++			SDL_OutOfMemory();
++			return (-1);
++		}
++		strncpy(info->name, name, size);
++		info->naxes = 3;
++		info->nhats = 0;
++		info->nballs = 0;
++		info->nbuttons = 0; // Ignored
++	}
++
++	__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joysticks init: %d acc, "
++			"%d pointers, %d hw(usb/bt)", nAccelerometers, nPointers,
++			nHardwareJoysticks - nPointers);
++	return nAccelerometers + nHardwareJoysticks;
+ }
+ 
+ /* Function to get the device-dependent name of a joystick */
+ const char *SDL_SYS_JoystickName(int index)
+ {
+-	if(index)
+-		return("Android multitouch");
+-	return("Android accelerometer/orientation sensor");
++	const char* emptyName = "";
++	if( index >= nAccelerometers + nHardwareJoysticks )
++	{
++		return emptyName;
++	}
++	const char* name = AndroidJoysticksInfo[index].name;
++	return(name?name:emptyName);
++
+ }
+ 
+ /* Function to open a joystick for use.
+@@ -622,17 +889,32 @@ const char *SDL_SYS_JoystickName(int index)
+  */
+ int SDL_SYS_JoystickOpen(SDL_Joystick *joystick)
+ {
+-	joystick->nbuttons = 0; // Ignored
+-	joystick->nhats = 0;
+-	joystick->nballs = 0;
+-	if( joystick->index == 0 )
+-		joystick->naxes = 3;
++	const int index = joystick->index;
++	if( index < nAccelerometers + nHardwareJoysticks )
++	{
++		const SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[index];
++		joystick->naxes = info->naxes;
++		joystick->nhats = info->nhats;
++		joystick->nballs = info->nballs;
++		joystick->nbuttons = info->nbuttons;
++		__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: open %d \"%s\", "
++						"%d axes, %d butons", joystick->index, info->name?info->name:"",
++						joystick->naxes, info->nbuttons);
++		AndroidJoysticksInfo[index].joystick = joystick;
++
++		if (index >= nAccelerometers) {
++			if (SDL_ANDROID_openJoystick(index - nAccelerometers) < 0) {
++				__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: open error %d", joystick->index);
++				AndroidJoysticksInfo[index].joystick = NULL;
++				return -1;
++			}
++		}
++	}
+ 	else
+ 	{
+-		joystick->naxes = 4;
+-		joystick->nbuttons = 1;
++		__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: open error - invalid index %d", joystick->index);
++		return -1;
+ 	}
+-	CurrentJoysticks[joystick->index] = joystick;
+ 	return(0);
+ }
+ 
+@@ -649,15 +931,29 @@ void SDL_SYS_JoystickUpdate(SDL_Joystick *joystick)
+ /* Function to close a joystick after use */
+ void SDL_SYS_JoystickClose(SDL_Joystick *joystick)
+ {
+-	CurrentJoysticks[joystick->index] = NULL;
++	const int index = joystick->index;
++	__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joystick: close %d", index);
++	if( index < nAccelerometers + nHardwareJoysticks) {
++		if (index >= nAccelerometers) {
++			SDL_ANDROID_closeJoystick(index - nAccelerometers);
++		}
++		AndroidJoysticksInfo[index].joystick = NULL;
++	}
+ 	return;
+ }
+ 
+ /* Function to perform any system-specific joystick related cleanup */
+ void SDL_SYS_JoystickQuit(void)
+ {
+-	int i;
+-	for(i=0; i<MAX_MULTITOUCH_POINTERS+1; i++)
+-		CurrentJoysticks[i] = NULL;
++	unsigned index;
++	__android_log_print(ANDROID_LOG_INFO, "libSDL", "Joysticks quit");
++	SDL_ANDROID_denumerateInputDevices();
++	for(index = 0; index < nAccelerometers + nHardwareJoysticks; index++) {
++		SDL_AndroidJoystickInfo *info = &AndroidJoysticksInfo[index];
++		if( info->name ) {
++			SDL_free(info->name);
++		}
++		memset(info, 0, sizeof(*info));
++	}
+ 	return;
+ }
+diff --git a/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.h b/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.h
+index c9a8ee0..ba42f81 100644
+--- a/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.h
++++ b/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.h
+@@ -183,6 +183,11 @@ static inline SDL_keysym *GetKeysym(SDLKey scancode, SDL_keysym *keysym)
+ enum MOUSE_ACTION { MOUSE_DOWN = 0, MOUSE_UP=1, MOUSE_MOVE=2 };
+ 
+ enum { MAX_MULTITOUCH_POINTERS = 16 };
++enum {
++	MAX_ACCELEROMETER_JOYSTICKS = 1,
++	MAX_TOUCH_JOYSTICKS = MAX_MULTITOUCH_POINTERS,
++	MAX_HARDWARE_JOYSTICKS = 4,
++};
+ 
+ extern int SDL_android_processTouchscreenKeyboard(int x, int y, int action, int pointerId);
+ 

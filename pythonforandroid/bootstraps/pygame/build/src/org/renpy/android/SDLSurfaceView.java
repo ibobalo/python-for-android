@@ -32,10 +32,18 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.util.Log;
+import android.util.SparseArray;
+import android.util.SparseIntArray;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
+import android.view.InputEvent;
+import android.view.InputDevice;
+import android.view.InputDevice.MotionRange;
+import android.view.KeyCharacterMap;
+import android.hardware.input.InputManager;
+import android.hardware.input.InputManager.InputDeviceListener;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.view.inputmethod.InputConnection;
@@ -66,9 +74,10 @@ import android.graphics.Color;
 import android.content.res.Resources;
 
 
-public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callback, Runnable {
+public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callback, Runnable,
+              InputManager.InputDeviceListener {
     static private final String TAG = "SDLSurface";
-    static private final boolean DEBUG = false;
+    static private final boolean DEBUG = true;
     static private final String mVertexShader =
         "uniform mat4 uMVPMatrix;\n" +
         "attribute vec4 aPosition;\n" +
@@ -284,6 +293,107 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
 
     private OnInterceptTouchListener mOnInterceptTouchListener = null;
 
+    public interface OnInterceptJoystickListener {
+        boolean onJoystick(MotionEvent ev);
+    }
+    private OnInterceptJoystickListener mOnInterceptJoystickListener = null;
+    
+    private static class InputDeviceInfo {
+        final public int            mNativeN;
+        final public int            mNativeCount;
+        public boolean[]            mIsOpen;
+        final public int[]          mAxes;  // lists axisId
+        final public SparseIntArray mButtonsMap; // maps keyCode to ButtonNumber
+        final public SparseIntArray mHatsXYMap;  // maps axisId of hatX to axisId of hatY
+
+        InputDeviceInfo(final int nativeN, final InputDevice device, final int nativeCount) {
+            mNativeN = nativeN;
+            mNativeCount = nativeCount;
+            mIsOpen = new boolean[nativeCount];
+            mAxes = new int[countDevicePointerAxes(device)];
+            populatePointerAxes(device);
+            mButtonsMap = new SparseIntArray();
+            populateButtons(device);
+            if (mButtonsMap.size() == 0) mButtonsMap.put(KeyEvent.KEYCODE_BUTTON_1, 0);
+            mHatsXYMap = new SparseIntArray();
+        }
+        InputDeviceInfo(final int nativeN, final InputDevice device) {
+            mNativeN = nativeN;
+            mNativeCount = 1;
+            mIsOpen = new boolean[1];;
+            mAxes = new int[countDeviceJoystickAxes(device)];
+            mButtonsMap = new SparseIntArray();
+            populateButtons(device);
+            mHatsXYMap = new SparseIntArray();
+            populateJoystickAxesAndHats(device);
+        }
+        private void populatePointerAxes(final InputDevice device) {
+            int nAxis = 0;
+            for (final MotionRange range : device.getMotionRanges()) {
+                final int source = range.getSource();
+                if ((source & InputDevice.SOURCE_CLASS_POINTER) != 0) {
+                    final int axisId = range.getAxis();
+                    mAxes[nAxis++] = axisId;
+                }
+            }
+        }
+        private void populateJoystickAxesAndHats(final InputDevice device) {
+            int nAxis = 0;
+            for (final MotionRange range : device.getMotionRanges()) {
+                final int source = range.getSource();
+                if ((source & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
+                    final int axisId = range.getAxis();
+                    final int hatXIndex = mJoystickHatsXYMap.indexOfKey(axisId);
+                    final int hatYIndex = mJoystickHatsXYMap.indexOfValue(axisId);
+                    if (hatXIndex < 0 && hatYIndex < 0) {
+                        // is an axis
+                        mAxes[nAxis++] = axisId;
+                    } else
+                    if (hatXIndex >= 0) {
+                        // is X for hat - add both x and y
+                        int axisIdY = mJoystickHatsXYMap.valueAt(hatXIndex);
+                        mHatsXYMap.put(axisId, axisIdY);
+                    }
+                }
+            }
+        }
+        private void populateButtons(final InputDevice device) {
+            final KeyCharacterMap keys = device.getKeyCharacterMap();
+            if (keys != null) {
+                for (int i = 0; i < mJoystickButtonMap.size(); i++) {
+                    final int key =  mJoystickButtonMap.keyAt(i);
+                    if (keys.deviceHasKey(key)) {
+                        final int btn = mJoystickButtonMap.valueAt(i);
+                        mButtonsMap.put(key, btn); 
+                    }
+                }
+//                if (mButtonsMap.size() == 0) {
+//                    int n = 0;
+//                    for (int key = 0; key < KeyEvent.getMaxKeyCode(); key++) {
+//                        if (keys.deviceHasKey(key)) {
+////                            Log.v(TAG, String.format("raw mapping %d\n", key, n));
+//                            mButtonsMap.put(key, n);
+//                            n++;
+//                        }
+//                    }
+//                    Log.w(TAG, String.format("device #%d have no mapable buttons. "
+//                            + "raw mapping used %d keys\n", mNativeN, n));
+//                }
+            } else {
+                Log.w(TAG, String.format("character map not found for input "
+                        + "device #%d\n", mNativeN));
+            }
+        }
+    };
+
+    static InputManager mInputManager = null;
+    static int mNextAvailableNativeN = 0;
+    static SparseIntArray mPointerDeviceIds = new SparseIntArray();
+    static SparseIntArray mJoystickDeviceIds = new SparseIntArray();
+    static SparseArray<InputDeviceInfo> mInputDeviceInfosMap = new SparseArray<InputDeviceInfo>();
+    static SparseIntArray mJoystickHatsXYMap = new SparseIntArray(); // maps axisId of hatX to axisId of hatY
+    static SparseIntArray mJoystickButtonMap = new SparseIntArray(); // maps all keyCode to ButtonNumber
+
     // The activity we're a part of.
     private static PythonActivity mActivity;
 
@@ -380,7 +490,45 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
 
         mActivity = act;
         mResourceManager = new ResourceManager(act);
+        if (mInputManager == null) mInputManager = (InputManager)act.getSystemService(
+                Context.INPUT_SERVICE);
+        if (mJoystickButtonMap.size() == 0) {
+            int button = 0; 
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_1, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_2, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_3, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_4, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_5, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_6, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_7, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_8, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_9, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_10, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_11, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_12, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_13, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_14, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_15, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_16, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_A, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_B, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_C, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_X, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_Y, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_Z, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_L1, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_R1, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_L2, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_R2, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_THUMBL, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_THUMBR, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_START,  button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_SELECT, button++);
+            mJoystickButtonMap.put(KeyEvent.KEYCODE_BUTTON_MODE,   button++);
 
+            mJoystickHatsXYMap.put(MotionEvent.AXIS_HAT_X, MotionEvent.AXIS_HAT_Y);
+        }
+        
         SurfaceHolder holder = getHolder();
         holder.addCallback(this);
         holder.setType(SurfaceHolder.SURFACE_TYPE_GPU);
@@ -727,6 +875,9 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
 
         mPause = PAUSE_STOP_ACK;
 
+        unregisterAllInputDevices();
+        mNextAvailableNativeN=0;
+
         //Log.i(TAG, "End of native init, stop everything (exit0)");
         System.exit(0);
     }
@@ -967,7 +1118,6 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
 
     @Override
     public boolean onTouchEvent(final MotionEvent event) {
-
         if (mInputActivated == false)
             return true;
 
@@ -975,9 +1125,10 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
             if (mOnInterceptTouchListener.onTouch(event))
                 return false;
 
-        int action = event.getAction() & MotionEvent.ACTION_MASK;
+        final InputDevice device = event.getDevice();
+        final int action = event.getAction() & MotionEvent.ACTION_MASK;
+        final int source = event.getSource();
         int sdlAction = -1;
-        int pointerId = -1;
         int pointerIndex = -1;
 
         switch ( action ) {
@@ -1006,7 +1157,7 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
                 pointerIndex = (event.getAction() & MotionEvent.ACTION_POINTER_INDEX_MASK)
                     >> MotionEvent.ACTION_POINTER_INDEX_SHIFT;
                 if ( action == MotionEvent.ACTION_POINTER_UP ) {
-                    pointerId = event.getPointerId(pointerIndex);
+                    int pointerId = event.getPointerId(pointerIndex);
                     if ( pointerId == mActivePointerId )
                         mActivePointerId = event.getPointerId(pointerIndex == 0 ? 1 : 0);
                 }
@@ -1014,26 +1165,30 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
         }
 
         if ( sdlAction >= 0 ) {
-
+            final int nativeN = getNativeNbyEvent(event);
+            int nativeCount = 1;
+            if (nativeN >= 0) {
+                final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
+                nativeCount = info.mNativeCount;
+                if (DEBUG) Log.i(TAG, String.format("InputDevice #%d-#%d touch event action:%d, source:0x%X",
+                        nativeN, nativeN + nativeCount - 1, action, source));
+            }
+           
             for ( int i = 0; i < event.getPointerCount(); i++ ) {
-
                 if ( pointerIndex == -1 || pointerIndex == i ) {
-
-                    /**
-                      Log.i("python", String.format("mouse id=%d action=%d x=%f y=%f",
-                      event.getPointerId(i),
-                      sdlAction,
-                      event.getX(i),
-                      event.getY(i)
-                      ));
-                     **/
-                    SDLSurfaceView.nativeMouse(
-                            (int)event.getX(i),
-                            (int)event.getY(i),
-                            sdlAction,
-                            event.getPointerId(i),
-                            (int)(event.getPressure(i) * 1000.0),
-                            (int)(event.getSize(i) * 1000.0));
+                    final int pointerId = event.getPointerId(i);
+                    if (pointerId < nativeCount) {
+                        SDLSurfaceView.nativeMouse(
+                                (int)event.getX(i),
+                                (int)event.getY(i),
+                                sdlAction,
+                                nativeN + pointerId,
+                                (int)(event.getPressure(i) * 1000.0),
+                                (int)(event.getSize(i) * 1000.0));
+                    } else {
+                        if (DEBUG) Log.i(TAG, String.format("InputDevice #%d-#%d touch out of count range (%d>=%d)",
+                                nativeN, nativeN + nativeCount - 1, pointerId, nativeCount));
+                    }
                 }
 
             }
@@ -1045,7 +1200,19 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
 
     @Override
     public boolean onKeyDown(int keyCode, final KeyEvent event) {
-        if (DEBUG) Log.d(TAG, String.format("onKeyDown() keyCode=%d", keyCode));
+        final int nativeN = getNativeNbyEvent(event);
+        final int source = event.getSource();
+        if (DEBUG) Log.d(TAG, String.format("onKeyDown() keyCode=%d from %d(0x%X)", keyCode, nativeN, source));
+        if (nativeN >= 0) {
+            final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
+            final int button = info.mButtonsMap.get(keyCode, keyCode);
+            for (int i = 0; i < info.mNativeCount; i++) {
+                if (info.mIsOpen[i]) {
+                    nativeJoystickButton(nativeN + i, button, 1);
+                }
+            }
+            return true;
+        }
         if (mDelLen > 0){
             mDelLen = 0;
             return true;
@@ -1059,7 +1226,19 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
 
     @Override
     public boolean onKeyUp(int keyCode, final KeyEvent event) {
-        if (DEBUG) Log.d(TAG, String.format("onKeyUp() keyCode=%d", keyCode));
+        final int nativeN = getNativeNbyEvent(event);
+        final int source = event.getSource();
+        if (DEBUG) Log.d(TAG, String.format("onKeyUp() keyCode=%d from %d(0x%X)", keyCode, nativeN, source));
+        if (nativeN >= 0) {
+            final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
+            final int button = info.mButtonsMap.get(keyCode, keyCode);
+            for (int i = 0; i < info.mNativeCount; i++) {
+                if (info.mIsOpen[i]) {
+                    nativeJoystickButton(nativeN + i, button, 0);
+                }
+            }
+            return true;
+        }
         if (mDelLen > 0){
             mDelLen = 0;
             return true;
@@ -1078,6 +1257,14 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
             Log.d(TAG, String.format(
                 "onKeyMultiple() keyCode=%d count=%d, keys=%s", keyCode, count, keys));
         char[] keysBuffer = new char[keys.length()];
+        final int nativeN = getNativeNbyEvent(event);
+        if (nativeN >= 0) {
+            final int source = event.getSource();
+            final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
+            Log.i(TAG, String.format("InputDevice #%d key %d multiples ignored",
+                    nativeN, event.getRepeatCount()));
+            return true;
+        }
         if (mDelLen > 0){
             mDelLen = 0;
             return true;
@@ -1100,7 +1287,7 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
     }
 
     @Override
-    public boolean onKeyPreIme(int keyCode, final KeyEvent event){
+    public boolean onKeyPreIme(int keyCode, final KeyEvent event) {
         if (DEBUG) Log.d(TAG, String.format("onKeyPreIme() keyCode=%d", keyCode));
         if (mInputActivated){
             switch (event.getAction()) {
@@ -1117,6 +1304,282 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
             return false;
         }
         return super.onKeyPreIme(keyCode, event);
+    }
+
+
+    static boolean isDeviceWithJoystick(final InputDevice device) {
+        return (device != null &&
+                (device.getSources() & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 &&
+                (countDevicePointerAxes(device) > 0 || countDeviceHatsAxes(device) > 0)
+                );
+    }
+    static boolean isDeviceWithPointers(final InputDevice device) {
+        return (device != null &&
+                (device.getSources() & InputDevice.SOURCE_CLASS_POINTER) != 0 &&
+                countDevicePointerAxes(device) > 0
+               );
+    }
+    static int countDevicePointerAxes(final InputDevice device) {
+        int nAxis = 0; 
+        for (final MotionRange range : device.getMotionRanges()) {
+            final int source = range.getSource();
+            if ((source & InputDevice.SOURCE_CLASS_POINTER) != 0) {
+//                Log.i(TAG, String.format("Pointer Device \"%s\" range used as axis %d",
+//                        device.getName(), nAxis));
+                nAxis++;
+            } else {
+//                Log.i(TAG, String.format("Pointer Device \"%s\" range skipked",
+//                        device.getName()));
+            }
+        }
+        return nAxis;
+    }
+    static int countDeviceJoystickAxes(final InputDevice device) {
+        int nAxis = 0; 
+        int nHats = 0; 
+        for (final MotionRange range : device.getMotionRanges()) {
+            final int source = range.getSource();
+            if ((source & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
+                final int axisId = range.getAxis();
+                final int hatXIndex = mJoystickHatsXYMap.indexOfKey(axisId);
+                final int hatYIndex = mJoystickHatsXYMap.indexOfValue(axisId);
+                if (hatXIndex < 0 && hatYIndex < 0) {
+                    // is an axis
+//                    Log.i(TAG, String.format("Joystick Device \"%s\" range used as axis %d",
+//                            device.getName(), nAxis));
+                    nAxis++;
+                } else {
+//                    Log.i(TAG, String.format("Joystick Device \"%s\" range used as hat",
+//                            device.getName(), nHats));
+                    nHats = 0;
+                }
+            } else {
+//                Log.i(TAG, String.format("Joystick Device \"%s\" range skipked",
+//                        device.getName()));
+            }
+        }
+        return nAxis;
+    }
+    static int countDeviceHatsAxes(final InputDevice device) {
+        int nAxis = 0; 
+        int nHats = 0; 
+        for (final MotionRange range : device.getMotionRanges()) {
+            final int source = range.getSource();
+            if ((source & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
+                final int axisId = range.getAxis();
+                final int hatXIndex = mJoystickHatsXYMap.indexOfKey(axisId);
+                final int hatYIndex = mJoystickHatsXYMap.indexOfValue(axisId);
+                if (hatXIndex < 0 && hatYIndex < 0) {
+                    // is an axis
+//                    Log.i(TAG, String.format("Joystick Device \"%s\" range used as axis %d",
+//                            device.getName(), nAxis));
+                    nAxis++;
+                } else {
+//                    Log.i(TAG, String.format("Joystick Device \"%s\" range used as hat",
+//                            device.getName(), nHats));
+                    nHats = 0;
+                }
+            } else {
+//                Log.i(TAG, String.format("Joystick Device \"%s\" range skipked",
+//                        device.getName()));
+            }
+        }
+        return nAxis;
+    }
+    // NativeInputDevices
+    static int getNativeNbyDeviceId(int deviceId, boolean isPointer) {
+        if (isPointer) {
+            return mPointerDeviceIds.get(deviceId, -1);
+        }
+        return mJoystickDeviceIds.get(deviceId, -1);
+    }
+    static void setNativeNForInputDeviceId(int nativeN, int deviceId, boolean isPointer) {
+        if (isPointer) {
+            mPointerDeviceIds.put(deviceId, nativeN);
+        } else {
+            mJoystickDeviceIds.put(deviceId, nativeN);
+        }
+    }
+    static void removeNativeNForInputDeviceId(int deviceId, boolean isPointer) {
+        if (isPointer) {
+            mPointerDeviceIds.delete(deviceId);
+        } else {
+            mJoystickDeviceIds.delete(deviceId);
+        }
+    }
+    static void registerInputDevice(int deviceId, final InputDevice device, boolean isPointer) {
+        final int nativeN = mNextAvailableNativeN;
+        setNativeNForInputDeviceId(nativeN, deviceId, isPointer);
+        final String name = device.getName();
+        int sources = device.getSources();
+        int nativeCount = 1;
+        if (isPointer) {
+            if ((sources & InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN)
+                nativeCount = 10;
+            else if ((sources & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD)
+                nativeCount = 5;
+        }
+        InputDeviceInfo info = isPointer
+                ? new InputDeviceInfo(nativeN, device, nativeCount)
+                : new InputDeviceInfo(nativeN, device);
+        mInputDeviceInfosMap.put(nativeN, info);
+        Log.i(TAG, String.format("InputDevice %d \"%s\" srcs 0x%X, registered #%d-%d",
+                deviceId, name, sources, nativeN, nativeN + nativeCount - 1));
+        for(int i = 0; i < nativeCount; i++) {
+            nativeJoystickAdd(nativeN + i,
+                    isPointer ? String.format("Private pointer: %s .%d", name, i) : name,
+                    info.mAxes.length,
+                    info.mHatsXYMap.size(),
+                    info.mButtonsMap.size()
+                    );
+            mNextAvailableNativeN++;
+        }
+    }
+    static void unregisterInputDeviceByNativeN(int nativeN) {
+        final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
+        Log.i(TAG, String.format("InputDevice %d unregister from #%d", nativeN));
+        for(int i = info.mNativeCount - 1; i >= 0 ; i--) {
+            nativeJoystickRemove(nativeN + i);
+        }
+        mInputDeviceInfosMap.delete(nativeN);
+    }
+    static void unregisterInputDevice(int deviceId) {
+        int nativeN = getNativeNbyDeviceId(deviceId, false);
+        if (nativeN >= 0) {
+            unregisterInputDeviceByNativeN(nativeN);
+            removeNativeNForInputDeviceId(deviceId, false);
+        }
+        nativeN = getNativeNbyDeviceId(deviceId, true);
+        if (nativeN >= 0) {
+            unregisterInputDeviceByNativeN(nativeN);
+            removeNativeNForInputDeviceId(deviceId, true);
+        }
+    }
+    static int getNativeNbyEvent(final InputEvent event) {
+        boolean isPointer = ((event.getSource() & InputDevice.SOURCE_CLASS_POINTER) != 0);
+        return getNativeNbyDeviceId(event.getDeviceId(), isPointer);
+    }
+    static void registerAllPointerDevices() {
+        for(int deviceId : mInputManager.getInputDeviceIds()) {
+            final InputDevice device = mInputManager.getInputDevice(deviceId);
+            if (isDeviceWithPointers(device)) {
+                registerInputDevice(deviceId, device, true);
+            }
+        }
+    }
+    static void registerAllJoystickDevices() {
+        for(int deviceId : mInputManager.getInputDeviceIds()) {
+            final InputDevice device = mInputManager.getInputDevice(deviceId);
+            if (isDeviceWithJoystick(device)) {
+                registerInputDevice(deviceId, device, false);
+            }
+        }
+    }
+    static void unregisterAllInputDevices() {
+        while (mPointerDeviceIds.size() > 0) {
+            final int deviceId = mPointerDeviceIds.keyAt(0);            
+            unregisterInputDevice(deviceId);
+        }
+        while (mJoystickDeviceIds.size() > 0) {
+            final int deviceId = mJoystickDeviceIds.keyAt(0);            
+            unregisterInputDevice(deviceId);
+        }
+    }
+
+    // Implementation of InputManager.InputDeviceListener.onInputDeviceAdded()
+    @Override
+    public void onInputDeviceAdded(int deviceId) {
+        Log.i(TAG, String.format("Input Device added %d", deviceId));
+        final InputDevice device = mInputManager.getInputDevice(deviceId);
+        // assume all pointer devices are permanent
+        registerInputDevice(deviceId, device, false);
+    }
+    // Implementation of InputManager.InputDeviceListener.onInputDeviceChanged()
+    @Override
+    public void onInputDeviceChanged(int deviceId) {
+        Log.i(TAG, String.format("Input Device changed %d", deviceId));
+        final InputDevice device = mInputManager.getInputDevice(deviceId);
+        unregisterInputDevice(deviceId);
+        // assume all pointer devices are permanent
+        registerInputDevice(deviceId, device, false);
+    }
+    // Implementation of InputManager.InputDeviceListener.onInputDeviceRemoved()
+    @Override
+    public void onInputDeviceRemoved(int deviceId) {
+        Log.i(TAG, String.format("Input Device %d removed", deviceId));
+        final InputDevice device = mInputManager.getInputDevice(deviceId);
+        unregisterInputDevice(deviceId);
+    }
+    private float flatAxisValue(float value, MotionRange range) {
+        final float flat = range.getFlat();
+        if (value < -flat) {
+            return -(value + flat) / (range.getMin() + flat);
+        } else if (value > flat) {
+            return (value - flat) / (range.getMax() - flat);
+        } else {
+            return 0.0f;
+        }
+    }
+    
+    @Override
+    public boolean onGenericMotionEvent(final MotionEvent event) {
+        final int nativeN = getNativeNbyEvent(event);
+        if (nativeN >= 0) {
+            final InputDevice device = event.getDevice();
+            final int action = event.getAction();
+            final int source = event.getSource();
+            if (DEBUG) Log.i(TAG, String.format("InputDevice move event #%d, action:%d, source:0x%X",
+                    nativeN, action, source));
+            if (action == MotionEvent.ACTION_MOVE) {
+                final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
+                if (info != null) {
+                    for (int i = 0; i < info.mNativeCount; i++) {
+                        if (info.mIsOpen[i]) {
+                            for (int axisN = 0; axisN < info.mAxes.length; axisN++) {
+                                final int axisId = info.mAxes[axisN];
+                                final MotionRange range = device.getMotionRange(axisId, source);
+//                                if (DEBUG) Log.i(TAG, String.format("pointer move processing: n=%d, "
+//                                        + " axis=%d, source=%d, range=%s", axisN, axisId, source,
+//                                        (range==null)?"null":"obj"));
+                                final float valueIn = event.getAxisValue(axisId);
+//                                if (DEBUG) Log.i(TAG, String.format("pointer move processing: "
+//                                        + "value=%f, flat=%f, min=%f, max=%f", valueIn, range.getFlat(), 
+//                                        range.getMin(), range.getMax()));
+                                final float valueOut = flatAxisValue(valueIn, range);
+//                                if (DEBUG) Log.i(TAG, String.format("joystick move #%d, %d, %f (%f)",
+//                                        nativeN + i, axisN, valueIn, valueOut));
+                                SDLSurfaceView.nativeJoystickMove(nativeN + i, axisN, valueOut);
+                            }
+                            for (int hatN = 0; hatN < info.mHatsXYMap.size(); hatN++) {
+                                final int axisIdX = info.mHatsXYMap.keyAt(hatN);
+                                final int axisIdY = info.mHatsXYMap.valueAt(hatN);
+                                final float valueX = event.getAxisValue(axisIdX);
+                                final float valueY = event.getAxisValue(axisIdY);
+//                            if (DEBUG) Log.i(TAG, String.format("joystick hat #%d, %d, %d, %d - %f %f",
+//                                    nativeN, hatN, axisIdX, axisIdY, valueX, valueY));
+                                SDLSurfaceView.nativeJoystickHat(nativeN, hatN, valueX, valueY);
+                            }
+                        }
+                        else
+                        {
+                            if (DEBUG) Log.i(TAG, String.format("InputDevice #%d.%d not opened, event ignored",
+                                    nativeN, i));
+                        }
+                    }
+                }
+                else
+                {
+                    if (DEBUG) Log.i(TAG, String.format("InputDevice #%d not registered, event ignored",
+                            nativeN));
+                }
+                return true;
+            }
+        } else {
+            if (DEBUG) Log.i(TAG, String.format("InputDevice move event skiped. no joystick",
+                    event.getDeviceId()));
+        }
+        if (DEBUG) Log.i(TAG, "move event passed to super");
+        return super.onGenericMotionEvent(event);
     }
 
     public void delayed_message(String message, int delay){
@@ -1322,6 +1785,47 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
         mInputActivated = true;
     }
 
+    static void enumerateInputDevices() {
+        Log.i(TAG, "Enumerating Input Devices: ");
+        unregisterAllInputDevices();
+        mNextAvailableNativeN = 0;
+        registerAllPointerDevices();
+        nativeSetPointersCount(mNextAvailableNativeN);
+        registerAllJoystickDevices();
+//      mInputManager.registerInputDeviceListener(this, null);
+//      Log.i(TAG, "Input Device Listener registered");
+    }
+    static void denumerateInputDevices() {
+//      mInputManager.unregisterInputDeviceListener(this);
+//      Log.i(TAG, "Input Device Listener unregistered");
+        unregisterAllInputDevices();
+    }
+    static int openJoystick(int nativeN) {
+        Log.i(TAG, String.format("open joystick #%d", nativeN));
+        for (int i = 0; i <= nativeN; i++) {
+            InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN - i, null);
+            if (info != null && i < info.mNativeCount) { 
+                info.mIsOpen[i] = true;
+                Log.i(TAG, String.format("InputDevice #%d.%d open done", nativeN - i, i));
+                return 0;
+            }
+        }
+        Log.i(TAG, String.format("nothing to open #%d", nativeN));
+        return -1;
+    }
+    static void closeJoystick(int nativeN) {
+        Log.i(TAG, String.format("close joystick #%d", nativeN));
+        for (int i = 0; i <= nativeN; i++) {
+            InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN - i, null);
+            if (info != null && i < info.mNativeCount) { 
+                info.mIsOpen[i] = false;
+                Log.i(TAG, String.format("InputDevice #%d.%d close done", nativeN - i, i));
+                return;
+            }
+        }
+        Log.i(TAG, String.format("nothing to close #%d", nativeN));
+    }
+    
     static void openUrl(String url) {
         Log.i("python", "Opening URL: " + url);
 
@@ -1420,6 +1924,12 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
     public static native boolean nativeKey(int keyCode, int down, int unicode);
     public static native void nativeSetMouseUsed();
     public static native void nativeSetMultitouchUsed();
+    public static native void nativeSetPointersCount(int nPointersCount);
+    public static native void nativeJoystickAdd(int nativeN, String name, int axesN, int hatsN, int btnsN);
+    public static native void nativeJoystickRemove(int nativeN);
+    public static native boolean nativeJoystickMove(int nativeN, int axisN, float value);
+    public static native boolean nativeJoystickButton(int nativeN, int buttonN, int state);
+    public static native boolean nativeJoystickHat(int nativeN, int hatN, float x, float y);
 
     public native void nativeResize(int width, int height);
     public native void nativeResizeEvent(int width, int height);
