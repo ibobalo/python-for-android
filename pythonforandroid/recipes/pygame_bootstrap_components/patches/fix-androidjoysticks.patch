@@ -1,3 +1,20 @@
+diff --git a/pygame_bootstrap_jni/sdl/src/joystick/SDL_joystick.c b/pygame_bootstrap_jni/sdl/src/joystick/SDL_joystick.c
+index 1294100..f15d918 100644
+--- a/pygame_bootstrap_jni/sdl/src/joystick/SDL_joystick.c
++++ b/pygame_bootstrap_jni/sdl/src/joystick/SDL_joystick.c
+@@ -517,8 +517,10 @@ int SDL_PrivateJoystickButton(SDL_Joystick *joystick, Uint8 button, Uint8 state)
+ 	}
+ #endif /* !SDL_EVENTS_DISABLED */
+ 
+-	/* Update internal joystick state */
+-	joystick->buttons[button] = state;
++	if (button < joystick->nbuttons) {
++		/* Update internal joystick state */
++		joystick->buttons[button] = state;
++	}
+ 
+ 	/* Post the event, if desired */
+ 	posted = 0;
 diff --git a/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.c b/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.c
 index d50976b..73ce38f 100644
 --- a/pygame_bootstrap_jni/sdl/src/video/android/SDL_androidinput.c

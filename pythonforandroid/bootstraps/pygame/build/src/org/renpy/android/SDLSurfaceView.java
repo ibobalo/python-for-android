@@ -363,7 +363,7 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
                 for (int i = 0; i < mJoystickButtonMap.size(); i++) {
                     final int key =  mJoystickButtonMap.keyAt(i);
                     if (keys.deviceHasKey(key)) {
-                        final int btn = mJoystickButtonMap.valueAt(i);
+                        final int btn = mButtonsMap.size(); //mJoystickButtonMap.valueAt(i);
                         mButtonsMap.put(key, btn); 
                     }
                 }
@@ -1437,7 +1437,7 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
     }
     static void unregisterInputDeviceByNativeN(int nativeN) {
         final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
-        Log.i(TAG, String.format("InputDevice %d unregister from #%d", nativeN));
+        Log.i(TAG, String.format("InputDevice unregister from #%d-%d", nativeN, nativeN + info.mNativeCount));
         for(int i = info.mNativeCount - 1; i >= 0 ; i--) {
             nativeJoystickRemove(nativeN + i);
         }
