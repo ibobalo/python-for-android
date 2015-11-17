@@ -34,8 +34,7 @@ class SDL2Bootstrap(Bootstrap):
             hostpython = sh.Command(self.ctx.hostpython)
             # AND: This *doesn't* need to be in arm env?
             shprint(hostpython, '-OO', '-m', 'compileall',
-                    self.ctx.get_python_install_dir(),
-                    _tail=10, _filterout="^Listing", _critical=True)
+                    self.ctx.get_python_install_dir())
             if not exists('python-install'):
                 shprint(sh.cp, '-a', self.ctx.get_python_install_dir(), './python-install')
 
