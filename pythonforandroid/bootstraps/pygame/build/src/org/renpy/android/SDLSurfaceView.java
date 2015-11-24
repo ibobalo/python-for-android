@@ -1170,8 +1170,9 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
             if (nativeN >= 0) {
                 final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
                 nativeCount = info.mNativeCount;
-                if (DEBUG) Log.i(TAG, String.format("InputDevice #%d-#%d touch event action:%d, source:0x%X",
-                        nativeN, nativeN + nativeCount - 1, action, source));
+//                if (DEBUG) Log.i(TAG, String.format(
+//                        "InputDevice #%d-#%d touch event action:%d, source:0x%X",
+//                        nativeN, nativeN + nativeCount - 1, action, source));
             }
            
             for ( int i = 0; i < event.getPointerCount(); i++ ) {
@@ -1186,7 +1187,8 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
                                 (int)(event.getPressure(i) * 1000.0),
                                 (int)(event.getSize(i) * 1000.0));
                     } else {
-                        if (DEBUG) Log.i(TAG, String.format("InputDevice #%d-#%d touch out of count range (%d>=%d)",
+                        if (DEBUG) Log.i(TAG, String.format(
+                                "InputDevice #%d-#%d touch out of count range (%d>=%d)",
                                 nativeN, nativeN + nativeCount - 1, pointerId, nativeCount));
                     }
                 }
@@ -1202,7 +1204,8 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
     public boolean onKeyDown(int keyCode, final KeyEvent event) {
         final int nativeN = getNativeNbyEvent(event);
         final int source = event.getSource();
-        if (DEBUG) Log.d(TAG, String.format("onKeyDown() keyCode=%d from %d(0x%X)", keyCode, nativeN, source));
+//        if (DEBUG) Log.d(TAG, String.format(
+//                "onKeyDown() keyCode=%d from %d(0x%X)", keyCode, nativeN, source));
         if (nativeN >= 0) {
             final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
             final int button = info.mButtonsMap.get(keyCode, keyCode);
@@ -1228,7 +1231,8 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
     public boolean onKeyUp(int keyCode, final KeyEvent event) {
         final int nativeN = getNativeNbyEvent(event);
         final int source = event.getSource();
-        if (DEBUG) Log.d(TAG, String.format("onKeyUp() keyCode=%d from %d(0x%X)", keyCode, nativeN, source));
+//        if (DEBUG) Log.d(TAG, String.format(
+//                 "onKeyUp() keyCode=%d from %d(0x%X)", keyCode, nativeN, source));
         if (nativeN >= 0) {
             final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
             final int button = info.mButtonsMap.get(keyCode, keyCode);
@@ -1253,16 +1257,16 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
     @Override
     public boolean onKeyMultiple(int keyCode, int count, KeyEvent event){
         String keys = event.getCharacters();
-        if (DEBUG)
-            Log.d(TAG, String.format(
-                "onKeyMultiple() keyCode=%d count=%d, keys=%s", keyCode, count, keys));
+//      if (DEBUG)
+//            Log.d(TAG, String.format(
+//                "onKeyMultiple() keyCode=%d count=%d, keys=%s", keyCode, count, keys));
         char[] keysBuffer = new char[keys.length()];
         final int nativeN = getNativeNbyEvent(event);
         if (nativeN >= 0) {
             final int source = event.getSource();
             final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
-            Log.i(TAG, String.format("InputDevice #%d key %d multiples ignored",
-                    nativeN, event.getRepeatCount()));
+//            Log.i(TAG, String.format("InputDevice #%d key %d multiples ignored",
+//                    nativeN, event.getRepeatCount()));
             return true;
         }
         if (mDelLen > 0){
@@ -1288,7 +1292,7 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
 
     @Override
     public boolean onKeyPreIme(int keyCode, final KeyEvent event) {
-        if (DEBUG) Log.d(TAG, String.format("onKeyPreIme() keyCode=%d", keyCode));
+//        if (DEBUG) Log.d(TAG, String.format("onKeyPreIme() keyCode=%d", keyCode));
         if (mInputActivated){
             switch (event.getAction()) {
                 case KeyEvent.ACTION_DOWN:
@@ -1423,8 +1427,8 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
                 ? new InputDeviceInfo(nativeN, device, nativeCount)
                 : new InputDeviceInfo(nativeN, device);
         mInputDeviceInfosMap.put(nativeN, info);
-        Log.i(TAG, String.format("InputDevice %d \"%s\" srcs 0x%X, registered #%d-%d",
-                deviceId, name, sources, nativeN, nativeN + nativeCount - 1));
+//        Log.i(TAG, String.format("InputDevice %d \"%s\" srcs 0x%X, registered #%d-%d",
+//                deviceId, name, sources, nativeN, nativeN + nativeCount - 1));
         for(int i = 0; i < nativeCount; i++) {
             nativeJoystickAdd(nativeN + i,
                     isPointer ? String.format("Private pointer: %s .%d", name, i) : name,
@@ -1437,7 +1441,7 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
     }
     static void unregisterInputDeviceByNativeN(int nativeN) {
         final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
-        Log.i(TAG, String.format("InputDevice unregister from #%d-%d", nativeN, nativeN + info.mNativeCount));
+//        Log.i(TAG, String.format("InputDevice unregister from #%d-%d", nativeN, nativeN + info.mNativeCount));
         for(int i = info.mNativeCount - 1; i >= 0 ; i--) {
             nativeJoystickRemove(nativeN + i);
         }
@@ -1528,8 +1532,9 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
             final InputDevice device = event.getDevice();
             final int action = event.getAction();
             final int source = event.getSource();
-            if (DEBUG) Log.i(TAG, String.format("InputDevice move event #%d, action:%d, source:0x%X",
-                    nativeN, action, source));
+//            if (DEBUG) Log.i(TAG, String.format(
+//                    "InputDevice move event #%d, action:%d, source:0x%X",
+//                    nativeN, action, source));
             if (action == MotionEvent.ACTION_MOVE) {
                 final InputDeviceInfo info = mInputDeviceInfosMap.get(nativeN);
                 if (info != null) {
@@ -1559,26 +1564,22 @@ public class SDLSurfaceView extends SurfaceView implements SurfaceHolder.Callbac
 //                                    nativeN, hatN, axisIdX, axisIdY, valueX, valueY));
                                 SDLSurfaceView.nativeJoystickHat(nativeN, hatN, valueX, valueY);
                             }
-                        }
-                        else
-                        {
-                            if (DEBUG) Log.i(TAG, String.format("InputDevice #%d.%d not opened, event ignored",
-                                    nativeN, i));
+//                        } else {
+//                            if (DEBUG) Log.i(TAG, String.format("InputDevice #%d.%d not opened, event ignored",
+//                                    nativeN, i));
                         }
                     }
-                }
-                else
-                {
-                    if (DEBUG) Log.i(TAG, String.format("InputDevice #%d not registered, event ignored",
-                            nativeN));
+//                } else {
+//                    if (DEBUG) Log.i(TAG, String.format("InputDevice #%d not registered, event ignored",
+//                            nativeN));
                 }
                 return true;
             }
-        } else {
-            if (DEBUG) Log.i(TAG, String.format("InputDevice move event skiped. no joystick",
-                    event.getDeviceId()));
+//        } else {
+//            if (DEBUG) Log.i(TAG, String.format("InputDevice move event skiped. no joystick",
+//                    event.getDeviceId()));
         }
-        if (DEBUG) Log.i(TAG, "move event passed to super");
+//        if (DEBUG) Log.i(TAG, "move event passed to super");
         return super.onGenericMotionEvent(event);
     }
 
