@@ -46,12 +46,12 @@ from appdirs import user_data_dir
 import sh
 
 from colorama import Style as Colo_Style, Fore as Colo_Fore
-from collections import defaultdict
-class colorama_shim(object):
-    def __init__(self):
-        self._dict = defaultdict(str)
-    def __getattr__(self, key):
-        return self._dict[key]
+    from collections import defaultdict
+    class colorama_shim(object):
+        def __init__(self):
+            self._dict = defaultdict(str)
+        def __getattr__(self, key):
+            return self._dict[key]
 Null_Style = Null_Fore = colorama_shim()
 
 if stdout.isatty():
