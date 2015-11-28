@@ -27,6 +27,6 @@ class KivyRecipe(CythonRecipe):
 
     def prebuild_arch(self, arch):
         super(KivyRecipe, self).prebuild_arch(arch)
-        self.apply_all_patches(arch=arch.arch)
+        self.apply_patch('patches/fix-androidjoysticks.patch', arch=arch.arch)
 
 recipe = KivyRecipe()
