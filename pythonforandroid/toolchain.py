@@ -52,6 +52,7 @@ class colorama_shim(object):
         self._dict = defaultdict(str)
     def __getattr__(self, key):
         return self._dict[key]
+Style = Fore = colorama_shim()
 Null_Style = Null_Fore = colorama_shim()
 
 if stdout.isatty():
@@ -150,6 +151,8 @@ def shprint(command, *args, **kwargs):
     kwargs["_bg"] = True
     is_critical = kwargs.pop('_critical', False)
     tail_n = kwargs.pop('_tail', 0)
+    filter_in = kwargs.pop('_filter', None)
+    filter_out = kwargs.pop('_filterout', None)
     if len(logger.handlers) > 1:
         logger.removeHandler(logger.handlers[1])
     try:
@@ -162,7 +165,8 @@ def shprint(command, *args, **kwargs):
 
     # If logging is not in DEBUG mode, trim the command if necessary
     if logger.level > logging.DEBUG:
-        logger.info('{}{}'.format(shorten_string(string, columns - 12), Err_Style.RESET_ALL))
+        logger.info('{}{}'.format(shorten_string(string, columns - 12),
+                                  Err_Style.RESET_ALL))
     else:
         logger.debug('{}{}'.format(string, Err_Style.RESET_ALL))
 
@@ -173,28 +177,54 @@ def shprint(command, *args, **kwargs):
         output = command(*args, **kwargs)
         for line in output:
             if logger.level > logging.DEBUG:
-                msg = line.replace('\n', ' ').replace('\t', ' ').replace('\b', ' ').rstrip()
+                msg = line.replace(
+                    '\n', ' ').replace(
+                        '\t', ' ').replace(
+                            '\b', ' ').rstrip()
                 if msg:
-#                    if len(msg) > msg_width: msg = msg[:(msg_width - 3)] + '...'
-                    sys.stdout.write('{}\r{}{:<{width}}'.format(Err_Style.RESET_ALL, msg_hdr, shorten_string(msg, msg_width), width=msg_width))
+                    sys.stdout.write('{}\r{}{:<{width}}'.format(
+                        Err_Style.RESET_ALL, msg_hdr,
+                        shorten_string(msg, msg_width), width=msg_width))
                     sys.stdout.flush()
                     need_closing_newline = True
             else:
                 logger.debug(''.join(['\t', line.rstrip()]))
-        if need_closing_newline: sys.stdout.write('{}\r{:>{width}}\r'.format(Err_Style.RESET_ALL, ' ', width=(columns - 1)))
-    except sh.ErrorReturnCode, err:
-        if need_closing_newline: sys.stdout.write('{}\r{:>{width}}\r'.format(Err_Style.RESET_ALL, ' ', width=(columns - 1)))
-        if tail_n:
-            def printtail(name, forecolor, tail_n, out):
+        if need_closing_newline:
+            sys.stdout.write('{}\r{:>{width}}\r'.format(
+                Style.RESET_ALL, ' ', width=(columns - 1)))
+    except sh.ErrorReturnCode as err:
+        if need_closing_newline:
+            sys.stdout.write('{}\r{:>{width}}\r'.format(
+                Style.RESET_ALL, ' ', width=(columns - 1)))
+        if tail_n or filter_in or filter_out:
+            def printtail(out, name, forecolor, tail_n=0,
+                          re_filter_in=None, re_filter_out=None):
                 lines = out.splitlines()
+                if re_filter_in is not None:
+                    lines = [l for l in lines if re_filter_in.search(l)]
+                if re_filter_out is not None:
+                    lines = [l for l in lines if not re_filter_out.search(l)]
                 if tail_n == 0 or len(lines) <= tail_n:
-                    info('{}:\n{}\t{}{}'.format(name, forecolor, '\t\n'.join(lines), Fore.RESET))
+                    info('{}:\n{}\t{}{}'.format(
+                        name, forecolor, '\t\n'.join(lines), Fore.RESET))
                 else:
-                    info('{} (last {} lines of {}):\n{}\t{}{}'.format(name, tail_n, len(lines), forecolor, '\t\n'.join(lines[-tail_n:]), Fore.RESET))
-            printtail('STDOUT', Fore.YELLOW, tail_n, err.stdout)
-            printtail('STDERR', Fore.RED, 0, err.stderr)
+                    info('{} (last {} lines of {}):\n{}\t{}{}'.format(
+                        name, tail_n, len(lines),
+                        forecolor, '\t\n'.join(lines[-tail_n:]), Fore.RESET))
+            printtail(err.stdout, 'STDOUT', Fore.YELLOW, tail_n,
+                      re.compile(filter_in) if filter_in else None,
+                      re.compile(filter_out) if filter_out else None)
+            printtail(err.stderr, 'STDERR', Fore.RED)
         if is_critical:
-            warning("{}ERROR: {} failed!{}".format(Fore.RED, command, Fore.RESET))
+            env = kwargs.get("env")
+            if env is not None:
+                info("{}ENV:{}\n{}\n".format(
+                    Fore.YELLOW, Fore.RESET, "\n".join(
+                        "set {}={}".format(n, v) for n, v in env.items())))
+            info("{}COMMAND:{}\ncd {} && {} {}\n".format(
+                Fore.YELLOW, Fore.RESET, getcwd(), command, ' '.join(args)))
+            warning("{}ERROR: {} failed!{}".format(
+                Fore.RED, command, Fore.RESET))
             exit(1)
         else:
             raise
@@ -1445,7 +1475,8 @@ class Bootstrap(object):
             warning('Can\'t find strip in PATH...')
             return
         strip = sh.Command(strip)
-        filens = shprint(sh.find, join(self.dist_dir, 'private'), join(self.dist_dir, 'libs'),
+        filens = shprint(sh.find, join(self.dist_dir, 'private'),
+                         join(self.dist_dir, 'libs'),
                 '-iname', '*.so', _env=env).stdout.decode('utf-8')
         logger.info('Stripping libraries in private dir')
         for filen in filens.split('\n'):
@@ -1599,21 +1630,6 @@ class Recipe(object):
         filename = join(self.recipe_dir, filename)
         shprint(sh.patch, "-t", "-d", self.get_build_dir(arch), "-p1",
                    "-i", filename, _tail=10)
-
-    def apply_all_patches(self, wildcard=join('patches','*.patch'), arch='armeabi'):
-        patches = glob.glob(join(self.recipe_dir, wildcard))
-        if not patches:
-            warning('requested patches {} not found for {}'.format(wildcard, self.name))
-        for filename in sorted(patches):
-            name = splitext(basename(filename))[0]
-            patched_flag = join(self.get_build_container_dir(arch), name + '.patched')
-            if exists(patched_flag):
-                info('patch {} already applied to {}, skipping'.format(name, self.name))
-            else:
-                self.apply_patch(filename, arch=arch)
-                sh.touch(patched_flag)
-        return len(patches)
-
 
     def copy_file(self, filename, dest):
         info("Copy {} to {}".format(filename, dest))
